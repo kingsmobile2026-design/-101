@@ -174,7 +174,8 @@ shared.config = shared.config or {
     autoFarmMode = "TP",
     autoFarmEnabled = false,
     winRateCalcEnabled = false,
-    readingEnabled = false
+    readingEnabled = false,
+    learningEnabled = false
 }
 local config = shared.config
 local UserRank = "Normal"
@@ -224,6 +225,7 @@ function TypewriterHandler:saveDatabase()
 end
 
 function TypewriterHandler:autoLearn(rawWord)
+    if not config.learningEnabled then return end
     if type(rawWord) ~= "string" then return end
     local word = string.lower(string.gsub(rawWord, "^%s*(.-)%s*$", "%1"))
     if word == "" then return end
@@ -1329,7 +1331,16 @@ local function initializeWindUIWindow()
         end
     })
 
-    OthersTab:Paragraph({ Title = "Anti-Ban & Additional Options", Desc = "안티밴 시스템 제어", Color = Color3.fromRGB(0, 255, 128) })
+    OthersTab:Paragraph({ Title = "Anti-Ban & Additional Options", Desc = "안티밴 시스템 및 학습 제어", Color = Color3.fromRGB(0, 255, 128) })
+
+    OthersTab:Toggle({
+        Title = "학습 버튼 ON/OFF",
+        Desc = "단어 성공 시 자동으로 새로운 단어를 학습하고 데이터베이스에 저장합니다.",
+        Value = config.learningEnabled,
+        Callback = function(v)
+            config.learningEnabled = v
+        end
+    })
 
     local isAntiBanLocked = (UserRank ~= "Premium")
     local antiBanToggle = OthersTab:Toggle({
@@ -1426,7 +1437,7 @@ local function initializeWindUIWindow()
         if not character then return end
         local rootPart = character:FindFirstChild("HumanoidRootPart")
         local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if not rootPart or not humanoid then return end
+        if not rootPart || not humanoid then return end
 
         local function scanFolder(parentFolder)
             for _, child in ipairs(parentFolder:GetChildren()) do
