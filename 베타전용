@@ -174,8 +174,7 @@ shared.config = shared.config or {
     autoFarmMode = "TP",
     autoFarmEnabled = false,
     winRateCalcEnabled = false,
-    readingEnabled = false,
-    learningEnabled = false
+    readingEnabled = false
 }
 local config = shared.config
 local UserRank = "Normal"
@@ -225,7 +224,6 @@ function TypewriterHandler:saveDatabase()
 end
 
 function TypewriterHandler:autoLearn(rawWord)
-    if not config.learningEnabled then return end
     if type(rawWord) ~= "string" then return end
     local word = string.lower(string.gsub(rawWord, "^%s*(.-)%s*$", "%1"))
     if word == "" then return end
@@ -709,6 +707,45 @@ local function sendWordToGame(word)
     end)
 end
 
+-- 최적화된 승률 및 점수 계산 헬퍼 함수
+local function calculateMatchWinRate(displayMatched, currentSearchText)
+    if not config.winRateCalcEnabled or not config.readingEnabled then
+        return 50
+    end
+
+    local attackCountTotal = 0
+    local loopCountTotal = 0
+    local totalMatched = #displayMatched
+
+    if totalMatched == 0 then return 50 end
+
+    -- 단일 루프로 공격/루프 단어 카운트 집계 (최적화)
+    for i = 1, totalMatched do
+        local targetW = displayMatched[i]
+        if checkIsAttackWord(targetW) then 
+            attackCountTotal = attackCountTotal + 1 
+        end
+        
+        local lastChar = utf8.char(utf8.codepoint(targetW, -1, -1))
+        if P_TIER2[lastChar] or P_TIER3[lastChar] then 
+            loopCountTotal = loopCountTotal + 1 
+        end
+    end
+
+    local currentWinRate = 50
+    if attackCountTotal >= 7 or loopCountTotal >= 13 then
+        currentWinRate = 15
+    elseif (currentSearchText == "역스윕" or currentSearchText == "역") and (attackCountTotal >= 1 or loopCountTotal >= 2) then
+        currentWinRate = 85
+    else
+        currentWinRate = currentWinRate - (attackCountTotal * 8) - (math.floor(loopCountTotal / 3) * 8)
+        if attackCountTotal == 0 then currentWinRate = currentWinRate + 40 end
+        if loopCountTotal == 0 then currentWinRate = currentWinRate + 30 end
+    end
+
+    return math.clamp(math.floor(currentWinRate), 0, 100)
+end
+
 local function initializeWindUIWindow()
     local WindUI = loadstring(game:HttpGet(urls.ilikedisui))()
     
@@ -1065,28 +1102,8 @@ local function initializeWindUIWindow()
 
             local maxDisplay = math.min(#displayMatched, 25)
             
-            local currentWinRate = 50
-            if config.winRateCalcEnabled and config.readingEnabled then
-                local attackCountTotal = 0
-                local loopCountTotal = 0
-                for _, targetW in ipairs(displayMatched) do
-                    if checkIsAttackWord(targetW) then attackCountTotal = attackCountTotal + 1 end
-                    local lChar = ""
-                    for _, cp in utf8.codes(targetW) do lChar = utf8.char(cp) end
-                    if P_TIER2[lChar] or P_TIER3[lChar] then loopCountTotal = loopCountTotal + 1 end
-                end
-
-                if attackCountTotal >= 7 or loopCountTotal >= 13 then
-                    currentWinRate = currentWinRate * 0.3
-                elseif (currentSearchText == "역스윕" or currentSearchText == "역") and (attackCountTotal >= 1 or loopCountTotal >= 2) then
-                    currentWinRate = 50 * 0.7 + 50
-                else
-                    currentWinRate = currentWinRate - (attackCountTotal * 10) - (math.floor(loopCountTotal / 3) * 10)
-                    if attackCountTotal == 0 then currentWinRate = currentWinRate + 80 end
-                    if loopCountTotal == 0 then currentWinRate = currentWinRate + 60 end
-                end
-                currentWinRate = math.clamp(math.floor(currentWinRate), 0, 100)
-            end
+            -- [기존 승률 계산 코드 대신 아래 최적화 함수 호출로 교체]
+            local currentWinRate = calculateMatchWinRate(displayMatched, currentSearchText)
             
             if config.winRateCalcEnabled then
                 WinRateLabel.Visible = true
@@ -1331,16 +1348,7 @@ local function initializeWindUIWindow()
         end
     })
 
-    OthersTab:Paragraph({ Title = "Anti-Ban & Additional Options", Desc = "안티밴 시스템 및 학습 제어", Color = Color3.fromRGB(0, 255, 128) })
-
-    OthersTab:Toggle({
-        Title = "학습 버튼 ON/OFF",
-        Desc = "단어 성공 시 자동으로 새로운 단어를 학습하고 데이터베이스에 저장합니다.",
-        Value = config.learningEnabled,
-        Callback = function(v)
-            config.learningEnabled = v
-        end
-    })
+    OthersTab:Paragraph({ Title = "Anti-Ban & Additional Options", Desc = "안티밴 시스템 제어", Color = Color3.fromRGB(0, 255, 128) })
 
     local isAntiBanLocked = (UserRank ~= "Premium")
     local antiBanToggle = OthersTab:Toggle({
@@ -1437,7 +1445,7 @@ local function initializeWindUIWindow()
         if not character then return end
         local rootPart = character:FindFirstChild("HumanoidRootPart")
         local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if not rootPart || not humanoid then return end
+        if not rootPart or not humanoid then return end
 
         local function scanFolder(parentFolder)
             for _, child in ipairs(parentFolder:GetChildren()) do
