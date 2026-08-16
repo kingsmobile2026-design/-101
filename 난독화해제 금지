@@ -1,0 +1,1825 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local PathfindingService = game:GetService("PathfindingService")
+local VirtualUser = game:GetService("VirtualUser")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+
+
+-- 알림 전송용 내장 함수 (notify 미정의로 인한 실행 오류 방지)
+local function notify(titleText, bodyText, duration)
+	pcall(function()
+		game:GetService("StarterGui"):SetCore("SendNotification", {
+			Title = titleText,
+			Text = bodyText,
+			Duration = duration or 3
+		})
+	end)
+end
+
+-- 무결성 및 변조 감지 방지 함수
+local function CheckTamper(...)
+error("Tamper Detected!")
+return
+end
+
+-- 메모리 및 가비지 컬렉터 후킹 (안티치트 메모리 검사 교란)
+local function HookMemoryBypass()
+if getrenv and hookfunction then
+pcall(function()
+hookfunction(getrenv().gcinfo, function(...)
+return 200 -- 서버 메모리 바보로 만들기 (적당히 가짜 값 반환)
+end)
+end)
+end
+
+-- Stats 서비스 쪽 메모리 사용량도 눈속임
+local statsService = cloneref(game:GetService("Stats"))
+if statsService then
+pcall(function()
+hookfunction(statsService.GetTotalMemoryUsageMb, function(arg1, ...)
+return 50 -- 서버가 뭘 보든 50MB로 고정해서 보여주기
+end)
+hookfunction(statsService.GetMemoryUsageMbForTag, function(arg1, ...)
+return 49
+end)
+end)
+end
+end
+
+-- 메타메서드 후킹 (__namecall & __index) - 속성 변조 감지 우회
+local function HookMetaMethods()
+local grm = getrawmetatable(game)
+setreadonly(grm, false)
+local oldNamecall = grm.__namecall
+
+grm.__namecall = newcclosure(function(self, ...)
+local method = getnamecallmethod()
+local args = {...}
+
+-- 플레이어 속성(스피드, 점프력 같은 거) 건드릴 때 안티치트가 눈치 못 채게 교란
+if not checkcaller() then
+-- 여기서 필요한 우회 작업 처리함
+end
+
+return oldNamecall(self, ...)
+end)
+end
+
+-- 에셋 프리로드(PreloadAsync) 후킹
+local function HookPreloadAsync()
+local ContentProvider = game:GetService("ContentProvider")
+hookfunction(ContentProvider.PreloadAsync, function(self, assets, callback, ...)
+-- 이상한 에셋 검사 들어오면 무시
+return
+end)
+end
+
+-- 디버그 라이브러리 후크 탐지 방어 및 전역 환경 감시
+local function protectAndWatch(tbl, name)
+local original = tbl[name]
+if not original then return end
+
+pcall(function()
+setmetatable(tbl, {
+__index = tbl,
+__newindex = function(t, k, v)
+if k == name then
+else
+rawset(t, k, v)
+end
+end
+})
+end)
+end
+
+-- loadstring이랑 핵심 전역 변수들 감시망 구축
+protectAndWatch(_G, "loadstring")
+protectAndWatch(_G, "getgenv")
+
+-- [추가] 고급 안티밴 및 로그 차단 보안 시스템 강화
+local function HookAntiBan()
+    pcall(function()
+        -- ScriptContext 에러 리포트 및 로그 송신 블락
+        local ScriptContext = game:GetService("ScriptContext")
+        if getconnections then
+            for _, conn in pairs(getconnections(ScriptContext.Error)) do
+                conn:Disable()
+            end
+        end
+
+        -- __namecall 기반의 서버 전송 RemoteEvent 필터링 (감지/로그 전송 차단)
+        local rawmeta = getrawmetatable(game)
+        if rawmeta then
+            setreadonly(rawmeta, false)
+            local oldNC = rawmeta.__namecall
+            rawmeta.__namecall = newcclosure(function(self, ...)
+                local method = getnamecallmethod()
+                if not checkcaller() then
+                    if method == "FireServer" or method == "InvokeServer" then
+                        local name = tostring(self):lower()
+                        if name:find("ban") or name:find("cheat") or name:find("detect") or name:find("log") or name:find("report") then
+                            return nil
+                        end
+                    end
+                end
+                return oldNC(self, ...)
+            end)
+        end
+    end)
+end
+
+-- 전체 바이패스 기능 일괄 실행 및 알림 연동
+local function EnableAntiCheatBypass()
+local success, err = pcall(function()
+HookMemoryBypass()
+HookMetaMethods()
+HookPreloadAsync()
+HookAntiBan() -- 안티밴 함수 연동
+end)
+
+if success then
+notify("Anti-Cheat Bypass", "바이패스 정상 작동", 4)
+else
+notify("Anti-Cheat Bypass", "바이패스 적용 실패", 4)
+end
+end
+
+-- 시작
+EnableAntiCheatBypass()
+-- 토글 상태 변수
+local autoAttack = false
+local autoMagic = false
+local autoTree = false
+local autoMonster = false
+local autoBoss = false
+local autoFishing = false
+local autoFishingSpot = false -- 낚시 자리 자동선점 토글
+local autoHeal = false
+local autoDurability = false
+local antiAfk = false
+local loopSpeedEnabled = false
+
+-- 낚시 퀴즈 자동 풀이 관련 변수
+local QuizSolverConnection = nil
+
+-- 이동 속도 설정 변수
+local customWalkSpeed = humanoid and humanoid.WalkSpeed or 16
+local moveMode = "Walk"
+
+-- 부활 시 1회 한정 비행 플래그 & 비행 진행 중 플래그
+local isJustRespawned = true
+local isFlying = false
+
+-- 마법/스킬 설정
+local selectedSkills = {true, false, false, false}
+local skillKeyCodes = {Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four}
+local skillCooldowns = {1.0, 1.0, 1.0, 1.0}
+local lastSkillFire = {0, 0, 0, 0}
+
+-- 낚시 자리 좌표 데이터 목록
+local fishingSpotCoords = {
+	Vector3.new(1074, 12, -208),
+	Vector3.new(1191, 14, -198),
+	Vector3.new(1274, 15, -147),
+	Vector3.new(1348, 13, -116),
+	Vector3.new(1593, 13, 9)
+}
+
+-- 몬스터 좌표 및 레벨 데이터
+local monsterData = {
+	["토끼"] = {pos = Vector3.new(351, 32, -274), level = 1},
+	["곰"] = {pos = Vector3.new(-410.98, 21.73, 220.03), level = 36},
+	["게"] = {pos = Vector3.new(349, 28, 628), level = 27},
+	["사슴"] = {pos = Vector3.new(652.25, 16.31, -44.64), level = 5},
+	["여우"] = {pos = Vector3.new(911.68, 20, 0), level = 22},
+	["스켈레톤"] = {pos = Vector3.new(1366, 27, -673), level = 52},
+	["달팽이"] = {pos = Vector3.new(358.98, 15.76, 261.77), level = 16},
+	["얼음슬라임"] = {pos = Vector3.new(-229, 17, -250), level = 41},
+	["늑대"] = {pos = Vector3.new(-763, 13, 530), level = 31},
+	["좀비"] = {pos = Vector3.new(-1005, 30, 268), level = 42},
+	["북극곰"] = {pos = Vector3.new(-712, 29, -111), level = 46},
+	["눈사람"] = {pos = Vector3.new(-1029, 80, -925), level = 71},
+	["눈좀비"] = {pos = Vector3.new(-874, 88, -1013), level = 74},
+	["독거미"] = {pos = Vector3.new(1334, 43, -414), level = 48},
+	["미이라"] = {pos = Vector3.new(895, 40, 1060), level = 61},
+	["골렘"] = {pos = Vector3.new(-254, 23, -687), level = 55},
+	["전갈"] = {pos = Vector3.new(1743, 27, -23), level = 58},
+	["붉은미이라"] = {pos = Vector3.new(1353, 21, 1033), level = 64},
+	["귀신"] = {pos = Vector3.new(-1113, 18, 809), level = 68},
+	["겨울광대"] = {pos = Vector3.new(-1015, 125, -1455), level = 77},
+	["본 드레곤"] = {pos = Vector3.new(1486, 109, 1282), level = 99}
+}
+
+local monsterList = {
+	"토끼", "곰", "게", "사슴", "여우", "스켈레톤", "달팽이", "얼음슬라임",
+	"늑대", "좀비", "북극곰", "눈사람", "눈좀비", "독거미", "미이라",
+	"골렘", "전갈", "붉은미이라", "귀신", "겨울광대"
+}
+
+local selectedMonsters = { ["⭐ 레벨 맞춤형"] = false }
+for _, name in ipairs(monsterList) do selectedMonsters[name] = (name == "토끼") end
+
+local monsterButtons = {}
+local skillButtons = {}
+local isMinimized = false
+local isDragging = false
+local dragStart, startPos
+
+local treeInterval = 3.0
+local monsterInterval = 3.0
+local MIN_INTERVAL = 0.1 -- 이동 주기 최소값을 0.1로 수정
+local MAX_INTERVAL = 10.0
+local flySpeedSetting = 25.0
+local MIN_FLY_SPEED = 5.0
+local MAX_FLY_SPEED = 300.0 -- 트윈 최대 속도를 300으로 확장
+
+local currentTarget = nil
+local targetAttackStartTime = 0
+local ignoredMonsters = {}
+local zoneIndex = 1
+
+-- 시각적 목표 마커 + 레이저 빔 효과
+local pathMarker = nil
+local laserBeam = nil
+local charAttach = nil
+local targetAttach = nil
+
+-- 버튼 클릭 이벤트를 강제로 발생시키는 함수
+local function clickButton(button)
+	if firesignal then
+		firesignal(button.MouseButton1Click)
+		firesignal(button.Activated)
+	elseif getconnections then
+		for _, conn in pairs(getconnections(button.MouseButton1Click)) do
+			conn:Fire()
+		end
+	end
+end
+
+-- 50스터드 내에서 몬스터가 가장 많이 모여 있는 중심 좌표를 찾는 함수
+local function getDenseMonsterClusterPosition()
+	local folder = Workspace:FindFirstChild("Monsters")
+	if not folder or not rootPart then return nil end
+
+	local playerPos = rootPart.Position
+	local scanRadius = 50
+	local monstersInRange = {}
+
+	local activeTargets = {}
+	if selectedMonsters["⭐ 레벨 맞춤형"] then
+		local success, pLevel = pcall(function() return player.leaderstats.Level.Value end)
+		if success and pLevel then
+			local closestDiff = math.huge
+			local bestMobName = nil
+			for mName, data in pairs(monsterData) do
+				if mName ~= "본 드레곤" then
+					local diff = math.abs(data.level - pLevel)
+					if diff < closestDiff then
+						closestDiff = diff
+						bestMobName = mName
+					end
+				end
+			end
+			if bestMobName then activeTargets[bestMobName] = true end
+		end
+	else
+		activeTargets = selectedMonsters
+	end
+
+	for _, obj in pairs(folder:GetChildren()) do
+		if obj:IsA("Model") and not ignoredMonsters[obj] then
+			local hum = obj:FindFirstChildOfClass("Humanoid")
+			local hrp = obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart
+			if hum and hum.Health > 0 and hrp then
+				local nameplate = hrp:FindFirstChild("Nameplate")
+				local monsterText = ""
+				if nameplate then
+					for _, child in ipairs(nameplate:GetChildren()) do
+						if child:IsA("TextLabel") and child:FindFirstChildOfClass("UIStroke") then
+							monsterText = child.Text
+							break
+						end
+					end
+				end
+
+				if monsterText ~= "" then
+					local cleanMonsterText = string.gsub(monsterText, "%s+", "")
+					local isSelectedMatch = false
+					for name, isEnabled in pairs(activeTargets) do
+						if name ~= "⭐ 레벨 맞춤형" and isEnabled then
+							local cleanTargetName = string.gsub(name, "%s+", "")
+							if string.find(cleanMonsterText, cleanTargetName) or string.find(cleanTargetName, cleanMonsterText) then
+								isSelectedMatch = true
+								break
+							end
+						end
+					end
+
+					if isSelectedMatch then
+						local pos = obj:GetPivot().Position
+						if (pos - playerPos).Magnitude <= scanRadius then
+							table.insert(monstersInRange, pos)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if #monstersInRange == 0 then return nil end
+
+	local centerSum = Vector3.new(0, 0, 0)
+	for _, pos in ipairs(monstersInRange) do
+		centerSum = centerSum + pos
+	end
+	local centerPos = centerSum / #monstersInRange
+
+	return centerPos
+end
+
+-- 개선된 퀴즈 해결 함수 (색상 문제는 대기하고 수치 문제로 전환될 때까지 모니터링)
+local function solveQuiz(quizGui)
+	if quizGui:FindFirstChild("IsSolving") then return end
+	local solveTag = Instance.new("BoolValue")
+	solveTag.Name = "IsSolving"
+	solveTag.Parent = quizGui
+
+	task.spawn(function()
+		local box = quizGui:WaitForChild("Box", 3)
+		if not box then 
+			if solveTag then solveTag:Destroy() end
+			return 
+		end
+
+		local titleObj = box:WaitForChild("Title", 3)
+		local optionsObj = box:WaitForChild("Options", 3)
+		if not titleObj or not optionsObj then 
+			if solveTag then solveTag:Destroy() end
+			return 
+		end
+
+		while quizGui and quizGui.Parent do
+			local isVisible = false
+			if quizGui:IsA("ScreenGui") and quizGui.Enabled then
+				isVisible = true
+			elseif (quizGui:IsA("GuiObject") or quizGui:IsA("Frame")) and quizGui.Visible then
+				isVisible = true
+			end
+
+			if not isVisible then break end
+
+			local titleText = titleObj.Text
+			local buttons = {}
+
+			for _, child in ipairs(optionsObj:GetChildren()) do
+				if child:IsA("TextButton") then
+					table.insert(buttons, child)
+				end
+			end
+
+			local targetButton = nil
+
+			-- '색상'이 포함된 문제는 해결하지 않고 넘김 (타이틀 변경 대기)
+			if not titleText:find("색상") and #buttons > 0 then
+				if titleText:find("가장 작은 수") then
+					local minVal = math.huge
+					for _, btn in ipairs(buttons) do
+						local val = tonumber(btn.Text)
+						if val and val < minVal then
+							minVal = val
+							targetButton = btn
+						end
+					end
+				elseif titleText:find("가장 큰 수") then
+					local maxVal = -math.huge
+					for _, btn in ipairs(buttons) do
+						local val = tonumber(btn.Text)
+						if val and val > maxVal then
+							maxVal = val
+							targetButton = btn
+						end
+					end
+				elseif titleText:find("%+") then
+					local num1, num2 = titleText:match("(%d+)%s*%+%s*(%d+)")
+					if num1 and num2 then
+						local result = tonumber(num1) + tonumber(num2)
+						for _, btn in ipairs(buttons) do
+							if tonumber(btn.Text) == result then
+								targetButton = btn
+								break
+							end
+						end
+					end
+				end
+			end
+
+			-- 풀 수 있는 정답 버튼을 찾았을 경우 즉시 클릭 후 루프 종료
+			if targetButton then
+				clickButton(targetButton)
+				task.wait(1.0)
+				break
+			end
+
+			-- 색상 문제이거나 문제 전환 중인 경우 0.5초 간격으로 계속 모니터링
+			task.wait(0.5)
+		end
+
+		if solveTag and solveTag.Parent then
+			solveTag:Destroy()
+		end
+	end)
+end
+
+-- 개선된 퀴즈 감지기 설정 (하위 계층 전체 감지 및 주기적 루프 탐색)
+local function setAutoQuizSolver(Enabled)
+	if Enabled then
+		if QuizSolverConnection then QuizSolverConnection:Disconnect() end
+
+		-- 1. DescendantAdded를 통해 PlayerGui 내 어느 계층에 추가되든 감지
+		QuizSolverConnection = playerGui.DescendantAdded:Connect(function(descendant)
+			if descendant.Name == "FishingQuizGui" then
+				solveQuiz(descendant)
+			end
+		end)
+
+		-- 2. UI가 매번 추가되지 않고 숨겨졌다가 Visible만 변경되는 경우를 대비한 스캔 루프
+		task.spawn(function()
+			while antiAfk do
+				local quizGui = nil
+				
+				for _, desc in ipairs(playerGui:GetDescendants()) do
+					if desc.Name == "FishingQuizGui" then
+						quizGui = desc
+						break
+					end
+				end
+
+				if quizGui then
+					local isVisible = false
+					if quizGui:IsA("ScreenGui") and quizGui.Enabled then
+						isVisible = true
+					elseif (quizGui:IsA("GuiObject") or quizGui:IsA("Frame")) and quizGui.Visible then
+						isVisible = true
+					end
+
+					if isVisible and quizGui:FindFirstChild("Box") then
+						solveQuiz(quizGui)
+						task.wait(3.5)
+					end
+				end
+				
+				task.wait(0.5)
+			end
+		end)
+	else
+		if QuizSolverConnection then
+			QuizSolverConnection:Disconnect()
+			QuizSolverConnection = nil
+		end
+	end
+end
+
+local function updateVisualPath(targetPos)
+	if not rootPart or not rootPart.Parent then return end
+
+	if not pathMarker then
+		pathMarker = Instance.new("Part")
+		pathMarker.Name = "AutoPathMarker"
+		pathMarker.Size = Vector3.new(4.5, 0.6, 4.5)
+		pathMarker.Shape = Enum.PartType.Cylinder
+		pathMarker.Material = Enum.Material.Neon
+		pathMarker.Color = Color3.fromRGB(0, 229, 255)
+		pathMarker.Anchored = true
+		pathMarker.CanCollide = false
+		pathMarker.Transparency = 0.35
+		pathMarker.Parent = Workspace
+	end
+	pathMarker.CFrame = CFrame.new(targetPos + Vector3.new(0, 0.3, 0)) * CFrame.Angles(0, 0, math.pi/2)
+
+	if not charAttach then
+		charAttach = Instance.new("Attachment")
+		charAttach.Name = "AutoLaserCharAttach"
+		charAttach.Parent = rootPart
+	end
+
+	if not targetAttach then
+		targetAttach = Instance.new("Attachment")
+		targetAttach.Name = "AutoLaserTargetAttach"
+		targetAttach.Parent = pathMarker
+	end
+
+	if not laserBeam then
+		laserBeam = Instance.new("Beam")
+		laserBeam.Name = "AutoPathLaserBeam"
+		laserBeam.Color = ColorSequence.new(Color3.fromRGB(0, 229, 255))
+		laserBeam.Width0 = 0.25
+		laserBeam.Width1 = 0.25
+		laserBeam.TextureMode = Enum.TextureMode.Stretch
+		laserBeam.FaceCamera = true
+		laserBeam.Transparency = NumberSequence.new(0.2)
+		laserBeam.Attachment0 = charAttach
+		laserBeam.Attachment1 = targetAttach
+		laserBeam.Parent = Workspace
+	end
+end
+
+local function removeVisualPath()
+	if laserBeam then laserBeam:Destroy(); laserBeam = nil end
+	if charAttach then charAttach:Destroy(); charAttach = nil end
+	if targetAttach then targetAttach:Destroy(); targetAttach = nil end
+	if pathMarker then pathMarker:Destroy(); pathMarker = nil end
+end
+
+-- UI 메인 화면 생성
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ModernAutoGui"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0.42, 0, 0.55, 0)
+mainFrame.Position = UDim2.new(0.04, 0, 0.1, 0)
+mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+mainFrame.BorderSizePixel = 0
+mainFrame.ClipsDescendants = true
+mainFrame.BackgroundTransparency = 1
+mainFrame.Visible = false
+mainFrame.Parent = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 8)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(45, 45, 65)
+stroke.Thickness = 1.5
+stroke.Transparency = 1
+stroke.Parent = mainFrame
+
+local loadingFrame = Instance.new("Frame")
+loadingFrame.Size = UDim2.new(1, 0, 1, 0)
+loadingFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+loadingFrame.BorderSizePixel = 0
+loadingFrame.ZIndex = 10
+loadingFrame.Parent = screenGui
+
+local loadingText = Instance.new("TextLabel")
+loadingText.Size = UDim2.new(0, 250, 0, 40)
+loadingText.Position = UDim2.new(0.5, -125, 0.5, -20)
+loadingText.BackgroundTransparency = 1
+loadingText.Text = "Creeper's Hub 시스템 로딩 중..."
+loadingText.TextColor3 = Color3.fromRGB(0, 229, 255)
+loadingText.Font = Enum.Font.GothamBold
+loadingText.TextSize = 15
+loadingText.TextTransparency = 1
+loadingText.ZIndex = 11
+loadingText.Parent = loadingFrame
+
+task.spawn(function()
+	TweenService:Create(loadingText, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+	task.wait(1.2)
+	TweenService:Create(loadingText, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+	TweenService:Create(loadingFrame, TweenInfo.new(0.6), {BackgroundTransparency = 1}):Play()
+
+	task.delay(0.4, function()
+		mainFrame.Visible = true
+		TweenService:Create(mainFrame, TweenInfo.new(0.5), {BackgroundTransparency = 0}):Play()
+		TweenService:Create(stroke, TweenInfo.new(0.5), {Transparency = 0}):Play()
+	end)
+	task.delay(0.6, function() loadingFrame:Destroy() end)
+end)
+
+local resizeBtn = Instance.new("TextButton")
+resizeBtn.Name = "ResizeHandle"
+resizeBtn.Size = UDim2.new(0, 16, 0, 16)
+resizeBtn.Position = UDim2.new(1, -16, 1, -16)
+resizeBtn.BackgroundTransparency = 1
+resizeBtn.Text = "◢"
+resizeBtn.TextColor3 = Color3.fromRGB(120, 120, 150)
+resizeBtn.TextSize = 10
+resizeBtn.ZIndex = 5
+resizeBtn.Parent = mainFrame
+
+local resizing = false
+local resizeStart, startSize
+
+resizeBtn.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		resizing = true
+		resizeStart = input.Position
+		startSize = mainFrame.AbsoluteSize
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		resizing = false
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if resizing and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - resizeStart
+		local newW = math.clamp(startSize.X + delta.X, 180, 400)
+		local newH = math.clamp(startSize.Y + delta.Y, 200, 500)
+		mainFrame.Size = UDim2.new(0, newW, 0, newH)
+	end
+end)
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 32)
+header.BackgroundColor3 = Color3.fromRGB(24, 24, 32)
+header.BorderSizePixel = 0
+header.Parent = mainFrame
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -55, 1, 0)
+title.Position = UDim2.new(0, 8, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "⚡ Creeper's Hub V0.6.2"
+title.TextColor3 = Color3.fromRGB(240, 240, 255)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 11
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = header
+
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Size = UDim2.new(0, 22, 0, 22)
+minimizeBtn.Position = UDim2.new(1, -48, 0.5, -11)
+minimizeBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
+minimizeBtn.Text = "−"
+minimizeBtn.TextColor3 = Color3.fromRGB(200, 200, 220)
+minimizeBtn.Font = Enum.Font.GothamBold
+minimizeBtn.TextSize = 13
+minimizeBtn.Parent = header
+Instance.new("UICorner", minimizeBtn).CornerRadius = UDim.new(0, 4)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 22, 0, 22)
+closeBtn.Position = UDim2.new(1, -24, 0.5, -11)
+closeBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+closeBtn.Text = "×"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 13
+closeBtn.Parent = header
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
+
+local content = Instance.new("ScrollingFrame")
+content.Size = UDim2.new(1, 0, 1, -32)
+content.Position = UDim2.new(0, 0, 0, 32)
+content.BackgroundTransparency = 1
+content.CanvasSize = UDim2.new(0, 0, 0, 0)
+content.ScrollBarThickness = 2
+content.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 110)
+content.Parent = mainFrame
+
+local uiPadding = Instance.new("UIPadding")
+uiPadding.PaddingLeft = UDim.new(0, 8)
+uiPadding.PaddingRight = UDim.new(0, 8)
+uiPadding.PaddingTop = UDim.new(0, 5)
+uiPadding.PaddingBottom = UDim.new(0, 5)
+uiPadding.Parent = content
+
+local uiLayout = Instance.new("UIListLayout")
+uiLayout.SortOrder = Enum.SortOrder.LayoutOrder
+uiLayout.Padding = UDim.new(0, 4)
+uiLayout.Parent = content
+
+uiLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	content.CanvasSize = UDim2.new(0, 0, 0, uiLayout.AbsoluteContentSize.Y + 12)
+end)
+
+local function createModernToggle(text, layoutOrder, callback)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, 0, 0, 26)
+	btn.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+	btn.Text = " " .. text
+	btn.TextColor3 = Color3.fromRGB(180, 180, 200)
+	btn.Font = Enum.Font.GothamMedium
+	btn.TextSize = 10
+	btn.TextXAlignment = Enum.TextXAlignment.Left
+	btn.LayoutOrder = layoutOrder
+	btn.Parent = content
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+
+	local indicator = Instance.new("Frame")
+	indicator.Size = UDim2.new(0, 5, 0, 5)
+	indicator.Position = UDim2.new(1, -12, 0.5, -2.5)
+	indicator.BackgroundColor3 = Color3.fromRGB(90, 90, 110)
+	indicator.Parent = btn
+	Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
+
+	local active = false
+	btn.MouseButton1Click:Connect(function()
+		active = not active
+		if active then
+			TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 55, 45), TextColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+			TweenService:Create(indicator, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(40, 220, 120)}):Play()
+		else
+			TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 28, 38), TextColor3 = Color3.fromRGB(180, 180, 200)}):Play()
+			TweenService:Create(indicator, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(90, 90, 110)}):Play()
+		end
+		callback(active)
+	end)
+	return btn
+end
+
+local startTreeFarm, startMonsterFarm, startFishingSpotClaim, moveToTarget
+
+createModernToggle("근접공격", 1, function(state) autoAttack = state end)
+createModernToggle("스킬 자동 사용 (선택)", 2, function(state) autoMagic = state end)
+createModernToggle("나무 자동이동", 3, function(state)
+	autoTree = state
+	if autoTree then startTreeFarm() else removeVisualPath() end
+end)
+createModernToggle("몬스터 자동사냥", 4, function(state)
+	autoMonster = state
+	if autoMonster or autoBoss then startMonsterFarm() else removeVisualPath() end
+end)
+createModernToggle("🔥 보스 우선 사냥 (본 드레곤)", 5, function(state)
+	autoBoss = state
+	if autoBoss then
+		currentTarget = nil
+		startMonsterFarm()
+	elseif not autoMonster then
+		removeVisualPath()
+	end
+end)
+createModernToggle("🎣 자동 낚시 (E키 자동 맞춤)", 6, function(state) autoFishing = state end)
+createModernToggle("📍 낚시 자리 자동선점", 7, function(state)
+	autoFishingSpot = state
+	if autoFishingSpot then startFishingSpotClaim() else removeVisualPath() end
+end)
+createModernToggle("R키 자동 회복 (체력 20% 이하)", 8, function(state) autoHeal = state end)
+createModernToggle("내구도 자동 조정(거친 숫돌 장착 필수)", 9, function(state) autoDurability = state end)
+
+-- Anti-AFK 토글에 낚시 퀴즈 자동 풀이 기능 연동
+createModernToggle("Anti-AFK 방지 시스템", 10, function(state)
+	antiAfk = state
+	setAutoQuizSolver(state)
+end)
+
+createModernToggle("이동 속도 변경 (loopSpeed)", 11, function(state) loopSpeedEnabled = state end)
+
+-- [추가] 특정 타겟 플레이어 지정용 UI 컴포넌트
+local targetPlayerName = ""
+
+local targetInputFrame = Instance.new("Frame")
+targetInputFrame.Size = UDim2.new(1, 0, 0, 26)
+targetInputFrame.BackgroundTransparency = 1
+targetInputFrame.LayoutOrder = 11.5
+targetInputFrame.Parent = content
+
+local targetTextBox = Instance.new("TextBox")
+targetTextBox.Size = UDim2.new(0.7, -2, 1, 0)
+targetTextBox.Position = UDim2.new(0, 0, 0, 0)
+targetTextBox.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+targetTextBox.Text = ""
+targetTextBox.PlaceholderText = "타겟 닉네임 입력..."
+targetTextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+targetTextBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 140)
+targetTextBox.Font = Enum.Font.Gotham
+targetTextBox.TextSize = 9
+targetTextBox.Parent = targetInputFrame
+Instance.new("UICorner", targetTextBox).CornerRadius = UDim.new(0, 5)
+
+targetTextBox:GetPropertyChangedSignal("Text"):Connect(function()
+    targetPlayerName = targetTextBox.Text
+end)
+
+local targetTpBtn = Instance.new("TextButton")
+targetTpBtn.Size = UDim2.new(0.3, 0, 1, 0)
+targetTpBtn.Position = UDim2.new(0.7, 2, 0, 0)
+targetTpBtn.BackgroundColor3 = Color3.fromRGB(45, 65, 95)
+targetTpBtn.Text = "타겟 TP"
+targetTpBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+targetTpBtn.Font = Enum.Font.GothamBold
+targetTpBtn.TextSize = 9
+targetTpBtn.Parent = targetInputFrame
+Instance.new("UICorner", targetTpBtn).CornerRadius = UDim.new(0, 5)
+
+targetTpBtn.MouseButton1Click:Connect(function()
+    if targetPlayerName ~= "" then
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= player and (p.Name:lower():find(targetPlayerName:lower()) or p.DisplayName:lower():find(targetPlayerName:lower())) then
+                if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                    moveToTarget(p.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3))
+                    break
+                end
+            end
+        end
+    end
+end)
+
+local skillLabel = Instance.new("TextLabel")
+skillLabel.Size = UDim2.new(1, 0, 0, 15)
+skillLabel.BackgroundTransparency = 1
+skillLabel.Text = "마법 스킬 슬롯 선택"
+skillLabel.TextColor3 = Color3.fromRGB(140, 140, 170)
+skillLabel.Font = Enum.Font.GothamBold
+skillLabel.TextSize = 9
+skillLabel.TextXAlignment = Enum.TextXAlignment.Left
+skillLabel.LayoutOrder = 12
+skillLabel.Parent = content
+
+local skillFrame = Instance.new("Frame")
+skillFrame.Size = UDim2.new(1, 0, 0, 22)
+skillFrame.BackgroundTransparency = 1
+skillFrame.LayoutOrder = 13
+skillFrame.Parent = content
+
+for i = 1, 4 do
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0.23, 0, 1, 0)
+	btn.Position = UDim2.new(0.25 * (i-1), 0, 0, 0)
+	btn.BackgroundColor3 = (i == 1) and Color3.fromRGB(35, 55, 80) or Color3.fromRGB(28, 28, 38)
+	btn.Text = "스킬 " .. tostring(i)
+	btn.TextColor3 = (i == 1) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 160, 180)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 9
+	btn.Parent = skillFrame
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+
+	skillButtons[i] = btn
+
+	btn.MouseButton1Click:Connect(function()
+		selectedSkills[i] = not selectedSkills[i]
+		if selectedSkills[i] then
+			TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 55, 80), TextColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+		else
+			TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 28, 38), TextColor3 = Color3.fromRGB(160, 160, 180)}):Play()
+		end
+	end)
+end
+
+local function createSlider(labelText, minV, maxV, defaultVal, isInteger, layoutOrder, callback)
+	local container = Instance.new("Frame")
+	container.Size = UDim2.new(1, 0, 0, 34)
+	container.BackgroundTransparency = 1
+	container.LayoutOrder = layoutOrder
+	container.Parent = content
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 0, 15)
+	label.BackgroundTransparency = 1
+	label.Text = labelText .. string.format(isInteger and ": %d" or ": %.1f", defaultVal)
+	label.TextColor3 = Color3.fromRGB(140, 140, 170)
+	label.Font = Enum.Font.GothamBold
+	label.TextSize = 9
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = container
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, 0, 0, 4)
+	track.Position = UDim2.new(0, 0, 0, 20)
+	track.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
+	track.BorderSizePixel = 0
+	track.Parent = container
+	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new((defaultVal - minV)/(maxV - minV), 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(0, 229, 255)
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+	local handle = Instance.new("TextButton")
+	handle.Size = UDim2.new(0, 10, 0, 10)
+	handle.Position = UDim2.new(fill.Size.X.Scale, -5, 0.5, -5)
+	handle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	handle.Text = ""
+	handle.AutoButtonColor = false
+	handle.Parent = track
+	Instance.new("UICorner", handle).CornerRadius = UDim.new(1, 0)
+
+	local dragging = false
+	handle.MouseButton1Down:Connect(function() dragging = true end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local p, s = track.AbsolutePosition, track.AbsoluteSize
+			local ratio = math.clamp((UserInputService:GetMouseLocation().X - p.X) / s.X, 0, 1)
+			fill.Size = UDim2.new(ratio, 0, 1, 0)
+			handle.Position = UDim2.new(ratio, -5, 0.5, -5)
+
+			local val = minV + (maxV - minV) * ratio
+			if isInteger then
+				val = math.floor(val + 0.5)
+				label.Text = labelText .. string.format(": %d", val)
+			else
+				val = math.floor(val * 10) / 10
+				label.Text = labelText .. string.format(": %.1f초", val)
+			end
+			callback(val)
+		end
+	end)
+end
+
+createSlider("나무 이동 주기", MIN_INTERVAL, MAX_INTERVAL, 3.0, false, 14, function(v) treeInterval = v end)
+createSlider("몬스터 이동 주기", MIN_INTERVAL, MAX_INTERVAL, 3.0, false, 15, function(v) monsterInterval = v end)
+createSlider("플라이 이동 속도", MIN_FLY_SPEED, MAX_FLY_SPEED, 25.0, true, 16, function(v) flySpeedSetting = v end)
+createSlider("이동 속도 설정 (WalkSpeed)", 16, 500, customWalkSpeed, true, 17, function(v) customWalkSpeed = v end)
+
+local moveModeHeader = Instance.new("TextButton")
+moveModeHeader.Size = UDim2.new(1, 0, 0, 26)
+moveModeHeader.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
+moveModeHeader.Text = " ▶ 이동 방식 설정"
+moveModeHeader.TextColor3 = Color3.fromRGB(210, 210, 230)
+moveModeHeader.Font = Enum.Font.GothamBold
+moveModeHeader.TextSize = 10
+moveModeHeader.TextXAlignment = Enum.TextXAlignment.Left
+moveModeHeader.LayoutOrder = 18
+moveModeHeader.Parent = content
+Instance.new("UICorner", moveModeHeader).CornerRadius = UDim.new(0, 5)
+
+local moveModeContainer = Instance.new("Frame")
+moveModeContainer.Size = UDim2.new(1, 0, 0, 26)
+moveModeContainer.BackgroundTransparency = 1
+moveModeContainer.Visible = false
+moveModeContainer.LayoutOrder = 19
+moveModeContainer.Parent = content
+
+local modeToggleBtn = Instance.new("TextButton")
+modeToggleBtn.Size = UDim2.new(1, 0, 1, 0)
+modeToggleBtn.BackgroundColor3 = Color3.fromRGB(35, 80, 55)
+modeToggleBtn.Text = "현재 이동 방식: 걷기"
+modeToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+modeToggleBtn.Font = Enum.Font.GothamBold
+modeToggleBtn.TextSize = 9
+modeToggleBtn.Parent = moveModeContainer
+Instance.new("UICorner", modeToggleBtn).CornerRadius = UDim.new(0, 4)
+
+moveModeHeader.MouseButton1Click:Connect(function()
+	moveModeContainer.Visible = not moveModeContainer.Visible
+	if moveModeContainer.Visible then
+		moveModeHeader.Text = " ▼ 이동 방식 설정"
+	else
+		moveModeHeader.Text = " ▶ 이동 방식 설정"
+	end
+end)
+
+modeToggleBtn.MouseButton1Click:Connect(function()
+	if moveMode == "Walk" then
+		moveMode = "Tween"
+		modeToggleBtn.Text = "현재 이동 방식: 비행 (Tween)"
+		TweenService:Create(modeToggleBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 55, 80)}):Play()
+	elseif moveMode == "Tween" then
+		moveMode = "Teleport"
+		modeToggleBtn.Text = "현재 이동 방식: 텔레포트"
+		TweenService:Create(modeToggleBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(80, 55, 35)}):Play()
+	else
+		moveMode = "Walk"
+		modeToggleBtn.Text = "현재 이동 방식: 걷기"
+		TweenService:Create(modeToggleBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 80, 55)}):Play()
+	end
+end)
+
+local dropdownHeader = Instance.new("TextButton")
+dropdownHeader.Size = UDim2.new(1, 0, 0, 26)
+dropdownHeader.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
+dropdownHeader.Text = " ▶ 대상 몬스터 선택"
+dropdownHeader.TextColor3 = Color3.fromRGB(210, 210, 230)
+dropdownHeader.Font = Enum.Font.GothamBold
+dropdownHeader.TextSize = 10
+dropdownHeader.TextXAlignment = Enum.TextXAlignment.Left
+dropdownHeader.LayoutOrder = 20
+dropdownHeader.Parent = content
+
+local dropdownContainer = Instance.new("Frame")
+dropdownContainer.Size = UDim2.new(1, 0, 0, 230)
+dropdownContainer.BackgroundTransparency = 1
+dropdownContainer.Visible = false
+dropdownContainer.LayoutOrder = 21
+dropdownContainer.Parent = content
+
+local levelMatchBtn = Instance.new("TextButton")
+levelMatchBtn.Size = UDim2.new(1, 0, 0, 22)
+levelMatchBtn.Position = UDim2.new(0, 0, 0, 0)
+levelMatchBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+levelMatchBtn.Text = "⭐ 레벨 맞춤형 사냥 (자동 타겟)"
+levelMatchBtn.TextColor3 = Color3.fromRGB(180, 180, 200)
+levelMatchBtn.Font = Enum.Font.GothamBold
+levelMatchBtn.TextSize = 9
+levelMatchBtn.Parent = dropdownContainer
+Instance.new("UICorner", levelMatchBtn).CornerRadius = UDim.new(0, 4)
+monsterButtons["⭐ 레벨 맞춤형"] = levelMatchBtn
+
+for i, name in ipairs(monsterList) do
+	local btn = Instance.new("TextButton")
+	local row = math.floor((i-1) / 3)
+	local col = (i-1) % 3
+
+	btn.Size = UDim2.new(0.31, 0, 0, 20)
+	btn.Position = UDim2.new(col * 0.34, 0, 0, 25 + row * 24)
+	btn.BackgroundColor3 = (name == "토끼") and Color3.fromRGB(70, 40, 35) or Color3.fromRGB(28, 28, 38)
+	btn.Text = name
+	btn.TextColor3 = (name == "토끼") and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 160, 180)
+	btn.Font = Enum.Font.Gotham
+	btn.TextSize = 9
+	btn.Parent = dropdownContainer
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+	monsterButtons[name] = btn
+end
+
+dropdownHeader.MouseButton1Click:Connect(function()
+	dropdownContainer.Visible = not dropdownContainer.Visible
+	if dropdownContainer.Visible then
+		dropdownHeader.Text = " ▼ 대상 몬스터 선택"
+	else
+		dropdownHeader.Text = " ▶ 대상 몬스터 선택"
+	end
+end)
+
+for name, btn in pairs(monsterButtons) do
+	btn.MouseButton1Click:Connect(function()
+		selectedMonsters[name] = not selectedMonsters[name]
+		if selectedMonsters[name] then
+			TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(70, 40, 35), TextColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+		else
+			TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 28, 38), TextColor3 = Color3.fromRGB(160, 160, 180)}):Play()
+		end
+	end)
+end
+
+local npcHeader = Instance.new("TextButton")
+npcHeader.Size = UDim2.new(1, 0, 0, 26)
+npcHeader.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
+npcHeader.Text = " ▶ NPC 이동"
+npcHeader.TextColor3 = Color3.fromRGB(210, 210, 230)
+npcHeader.Font = Enum.Font.GothamBold
+npcHeader.TextSize = 10
+npcHeader.TextXAlignment = Enum.TextXAlignment.Left
+npcHeader.LayoutOrder = 22
+npcHeader.Parent = content
+Instance.new("UICorner", npcHeader).CornerRadius = UDim.new(0, 5)
+
+local npcContainer = Instance.new("ScrollingFrame")
+npcContainer.Size = UDim2.new(1, 0, 0, 100)
+npcContainer.BackgroundTransparency = 1
+npcContainer.Visible = false
+npcContainer.LayoutOrder = 23
+npcContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+npcContainer.ScrollBarThickness = 2
+npcContainer.Parent = content
+
+local npcLayout = Instance.new("UIListLayout")
+npcLayout.SortOrder = Enum.SortOrder.LayoutOrder
+npcLayout.Padding = UDim.new(0, 3)
+npcLayout.Parent = npcContainer
+
+npcLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	npcContainer.CanvasSize = UDim2.new(0, 0, 0, npcLayout.AbsoluteContentSize.Y + 6)
+end)
+
+-- [수정] NPC TP 이동 기능 지원 강화 (개별 버튼 TP 및 자동 탐색)
+local function updateNpcList()
+	for _, child in pairs(npcContainer:GetChildren()) do
+		if child:IsA("TextButton") then child:Destroy() end
+	end
+
+	local folder = Workspace:FindFirstChild("VillageNPCs") or Workspace:FindFirstChild("NPCs") or Workspace
+	if not folder then return end
+
+	local count = 0
+	for _, npc in pairs(folder:GetChildren()) do
+		if npc:IsA("Model") and npc ~= character and npc:FindFirstChildOfClass("Humanoid") then
+			count = count + 1
+			local btn = Instance.new("TextButton")
+			btn.Size = UDim2.new(1, 0, 0, 22)
+			btn.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+			btn.Text = " 📍 " .. npc.Name .. " (TP)"
+			btn.TextColor3 = Color3.fromRGB(180, 180, 200)
+			btn.Font = Enum.Font.Gotham
+			btn.TextSize = 9
+			btn.TextXAlignment = Enum.TextXAlignment.Left
+			btn.LayoutOrder = count
+			btn.Parent = npcContainer
+			Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+
+			btn.MouseButton1Click:Connect(function()
+				if rootPart and rootPart.Parent then
+					local pivot = npc:GetPivot()
+					local pos = pivot and pivot.Position or (npc.PrimaryPart and npc.PrimaryPart.Position)
+					if pos then moveToTarget(CFrame.new(pos + Vector3.new(0, 3, 0))) end
+				end
+			end)
+		end
+	end
+	npcContainer.Size = UDim2.new(1, 0, 0, math.clamp(count * 25, 25, 110))
+end
+
+npcHeader.MouseButton1Click:Connect(function()
+	local visible = not npcContainer.Visible
+	npcContainer.Visible = visible
+	if visible then
+		npcHeader.Text = " ▼ NPC 이동"
+		updateNpcList()
+	else
+		npcHeader.Text = " ▶ NPC 이동"
+	end
+end)
+
+minimizeBtn.MouseButton1Click:Connect(function()
+	isMinimized = not isMinimized
+	if isMinimized then
+		TweenService:Create(mainFrame, TweenInfo.new(0.25), {Size = UDim2.new(0.42, 0, 0, 32)}):Play()
+		content.Visible = false
+		minimizeBtn.Text = "+"
+	else
+		content.Visible = true
+		TweenService:Create(mainFrame, TweenInfo.new(0.3), {Size = UDim2.new(0.42, 0, 0.55, 0)}):Play()
+		minimizeBtn.Text = "−"
+	end
+end)
+
+closeBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+
+header.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		isDragging = true
+		dragStart = input.Position
+		startPos = mainFrame.Position
+	end
+end)
+
+header.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		isDragging = false
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+-- 비행 완료까지 확실히 보장하는 트윈 이동 (바닥 아래 파묻힘 방지 고도 보정)
+local function flyToTarget(targetCFrame)
+	if not rootPart or not rootPart.Parent then return end
+	isFlying = true
+
+	-- 캐릭터 모델 및 지면 파묻힘 방지를 위한 Y축 고도 안전 보정
+	local targetPos = targetCFrame.Position
+	local adjustedY = targetPos.Y
+	if humanoid and humanoid.HipHeight then
+		adjustedY = adjustedY + humanoid.HipHeight + 1.5
+	else
+		adjustedY = adjustedY + 3.5
+	end
+	
+	local safeTargetCFrame = CFrame.new(targetPos.X, adjustedY, targetPos.Z) * targetCFrame.Rotation
+	updateVisualPath(safeTargetCFrame.Position)
+
+	local distance = (safeTargetCFrame.Position - rootPart.Position).Magnitude
+	local travelTime = math.clamp(distance / flySpeedSetting, 0.1, 10.0)
+	local tweenInfo = TweenInfo.new(travelTime, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+	local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = safeTargetCFrame})
+
+	tween:Play()
+	tween.Completed:Wait()
+
+	removeVisualPath()
+	isFlying = false
+end
+
+local function walkToTarget(targetCFrame)
+	if not humanoid or not rootPart or not rootPart.Parent then return end
+	local targetPos = targetCFrame.Position
+	updateVisualPath(targetPos)
+
+	local path = PathfindingService:CreatePath({
+		AgentRadius = 2,
+		AgentHeight = 5,
+		AgentCanJump = true,
+		WaypointSpacing = 3
+	})
+
+	local success = pcall(function() path:ComputeAsync(rootPart.Position, targetPos) end)
+
+	if success and path.Status == Enum.PathStatus.Success then
+		local waypoints = path:GetWaypoints()
+		for i, waypoint in ipairs(waypoints) do
+			if not rootPart or not rootPart.Parent or not humanoid or humanoid.Health <= 0 then break end
+			if (targetPos - rootPart.Position).Magnitude < 1.5 then break end
+
+			humanoid:MoveTo(waypoint.Position)
+			if waypoint.Action == Enum.PathWaypointAction.Jump then humanoid.Jump = true end
+
+			local startTime = tick()
+			local lastPos = rootPart.Position
+
+			repeat
+				task.wait(0.1)
+				if not rootPart or not rootPart.Parent or not humanoid or humanoid.Health <= 0 then removeVisualPath() return end
+
+				if tick() - startTime > 0.8 then
+					local movedDist = (rootPart.Position - lastPos).Magnitude
+					if movedDist < 0.2 then
+						humanoid.Jump = true
+						lastPos = rootPart.Position
+						startTime = tick()
+					end
+				end
+
+				local distToWaypoint = (Vector3.new(rootPart.Position.X, 0, waypoint.Position.Z) - Vector3.new(waypoint.Position.X, 0, waypoint.Position.Z)).Magnitude
+				local nextWaypoint = waypoints[i + 1]
+				local threshold = nextWaypoint and 3 or 1.5
+
+				if distToWaypoint < threshold or (tick() - startTime > 3.0) then break end
+			until false
+		end
+	else
+		humanoid:MoveTo(targetPos)
+		local t = tick()
+		local lastPos = rootPart.Position
+		while rootPart and rootPart.Parent and humanoid and humanoid.Health > 0 do
+			local dist = (Vector3.new(rootPart.Position.X, 0, rootPart.Position.Z) - Vector3.new(targetPos.X, 0, targetPos.Z)).Magnitude
+			if dist < 1.8 or tick() - t > 8 then break end
+			if tick() - t > 1.2 and (rootPart.Position - lastPos).Magnitude < 0.2 then
+				humanoid.Jump = true
+				lastPos = rootPart.Position
+			end
+			task.wait(0.15)
+		end
+	end
+
+	if humanoid and humanoid.Parent then humanoid:MoveTo(rootPart.Position) end
+	removeVisualPath()
+end
+
+moveToTarget = function(targetCFrame)
+	if not rootPart or not rootPart.Parent or isFlying then return end
+
+	if moveMode == "Teleport" then
+		updateVisualPath(targetCFrame.Position)
+		rootPart.CFrame = targetCFrame
+		task.wait(0.5)
+		removeVisualPath()
+	elseif moveMode == "Walk" then
+		if isJustRespawned then
+			flyToTarget(targetCFrame)
+			isJustRespawned = false
+		else
+			walkToTarget(targetCFrame)
+		end
+	else
+		flyToTarget(targetCFrame)
+	end
+end
+
+local function getClosestTree()
+	local closest = nil
+	local closestDist = math.huge
+	local success, folder = pcall(function() return Workspace.Decorations.Trees.AutumnOak end)
+	if not success or not folder or not rootPart then return nil end
+
+	local playerPos = rootPart.Position
+	local successInternal, children = pcall(function() return folder:GetChildren() end)
+	if not successInternal or not children then return nil end
+
+	for _, obj in pairs(children) do
+		if obj:IsA("Model") then
+			local pivot = obj:GetPivot()
+			local pos = pivot and pivot.Position or (obj.PrimaryPart and obj.PrimaryPart.Position)
+			if pos then
+				local dist = (pos - playerPos).Magnitude
+				if dist < closestDist then
+					closestDist = dist
+					closest = { cframe = pivot or CFrame.new(pos) }
+				end
+			end
+		end
+	end
+	return closest
+end
+
+local function getClosestMonster()
+	local folder = Workspace:FindFirstChild("Monsters")
+	if not folder or not rootPart then return nil end
+
+	local playerPos = rootPart.Position
+	local currentTime = tick()
+
+	if autoBoss then
+		local bossObj = nil
+		local successMonsters, mChildren = pcall(function() return folder:GetChildren() end)
+
+		if successMonsters and mChildren then
+			for _, obj in pairs(mChildren) do
+				if obj:IsA("Model") and not ignoredMonsters[obj] then
+					local hum = obj:FindFirstChildOfClass("Humanoid")
+					local hrp = obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart
+
+					if hum and hum.Health > 0 and hrp then
+						local nameplate = hrp:FindFirstChild("Nameplate")
+						local monsterText = ""
+						if nameplate then
+							local successLabels, labels = pcall(function() return nameplate:GetChildren() end)
+							if successLabels and labels then
+								for _, child in pairs(labels) do
+									if child:IsA("TextLabel") and child:FindFirstChildOfClass("UIStroke") then
+										monsterText = child.Text
+										break
+									end
+								end
+							end
+						end
+						if string.find(string.gsub(monsterText, "%s+", ""), "본드레곤") then
+							bossObj = obj
+							break
+						end
+					end
+				end
+			end
+		end
+
+		if bossObj then
+			if currentTarget ~= bossObj then
+				currentTarget = bossObj
+				targetAttackStartTime = currentTime
+			end
+			local pivot = bossObj:GetPivot()
+			local pos = pivot and pivot.Position or bossObj.PrimaryPart.Position
+			return { cframe = pivot or CFrame.new(pos) }
+		else
+			if not autoMonster then
+				return { cframe = CFrame.new(monsterData["본 드레곤"].pos + Vector3.new(0, 3, 0)) }
+			end
+		end
+	end
+
+	if currentTarget then
+		local hum = currentTarget:FindFirstChildOfClass("Humanoid")
+		local hrp = currentTarget:FindFirstChild("HumanoidRootPart") or currentTarget.PrimaryPart
+
+		if not currentTarget.Parent or not hum or hum.Health <= 0 or not hrp then
+			currentTarget = nil
+		elseif currentTime - targetAttackStartTime >= 20 then
+			ignoredMonsters[currentTarget] = true
+			currentTarget = nil
+		else
+			local pivot = currentTarget:GetPivot()
+			local pos = pivot and pivot.Position or hrp.Position
+			if pos then return { cframe = pivot or CFrame.new(pos) } end
+		end
+	end
+
+	if not autoMonster then return nil end
+
+	local closest = nil
+	local closestDist = math.huge
+	local bestObj = nil
+
+	local activeTargets = {}
+	if selectedMonsters["⭐ 레벨 맞춤형"] then
+		local success, pLevel = pcall(function() return player.leaderstats.Level.Value end)
+		if success and pLevel then
+			local closestDiff = math.huge
+			local bestMobName = nil
+			for mName, data in pairs(monsterData) do
+				if mName ~= "본 드레곤" then
+					local diff = math.abs(data.level - pLevel)
+					if diff < closestDiff then
+						closestDiff = diff
+						bestMobName = mName
+					end
+				end
+			end
+			if bestMobName then
+				activeTargets[bestMobName] = true
+			end
+		end
+	else
+		activeTargets = selectedMonsters
+	end
+
+	local successMonsters, mChildren = pcall(function() return folder:GetChildren() end)
+	if not successMonsters or not mChildren then return nil end
+
+	for _, obj in pairs(mChildren) do
+		if obj:IsA("Model") and not ignoredMonsters[obj] then
+			local hum = obj:FindFirstChildOfClass("Humanoid")
+			local hrp = obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart
+
+			if hum and hum.Health > 0 and hrp then
+				local nameplate = hrp:FindFirstChild("Nameplate")
+				local monsterText = ""
+
+				if nameplate then
+					local successLabels, labels = pcall(function() return nameplate:GetChildren() end)
+					if successLabels and labels then
+						for _, child in pairs(labels) do
+							if child:IsA("TextLabel") and child:FindFirstChildOfClass("UIStroke") then
+								monsterText = child.Text
+								break
+							end
+						end
+					end
+				end
+
+				if monsterText ~= "" then
+					local cleanMonsterText = string.gsub(monsterText, "%s+", "")
+					local isSelectedMatch = false
+
+					for name, isEnabled in pairs(activeTargets) do
+						if name ~= "⭐ 레벨 맞춤형" and isEnabled then
+							local cleanTargetName = string.gsub(name, "%s+", "")
+							if string.find(cleanMonsterText, cleanTargetName) or string.find(cleanTargetName, cleanMonsterText) then
+								isSelectedMatch = true
+								break
+							end
+						end
+					end
+
+					if isSelectedMatch then
+						local pivot = obj:GetPivot()
+						local pos = pivot and pivot.Position or hrp.Position
+						if pos then
+							local dist = (pos - playerPos).Magnitude
+							if dist < closestDist then
+								closestDist = dist
+								closest = { cframe = pivot or CFrame.new(pos) }
+								bestObj = obj
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if bestObj then
+		if currentTarget ~= bestObj then
+			currentTarget = bestObj
+			targetAttackStartTime = currentTime
+		end
+	else
+		local activeZones = {}
+		for name, isEnabled in pairs(activeTargets) do
+			if name ~= "⭐ 레벨 맞춤형" and isEnabled and monsterData[name] then
+				table.insert(activeZones, monsterData[name].pos)
+			end
+		end
+
+		if #activeZones > 0 then
+			zoneIndex = ((zoneIndex - 1) % #activeZones) + 1
+			local targetPos = activeZones[zoneIndex]
+			return { cframe = CFrame.new(targetPos + Vector3.new(0, 3, 0)) }
+		end
+	end
+
+	return closest
+end
+
+task.spawn(function()
+	while true do
+		task.wait(60)
+		ignoredMonsters = {}
+	end
+end)
+
+function startTreeFarm()
+	task.spawn(function()
+		while autoTree do
+			local target = getClosestTree()
+			if target and rootPart and rootPart.Parent then
+				moveToTarget(target.cframe * CFrame.new(0, 0, 1.8))
+			end
+			task.wait(treeInterval)
+		end
+		removeVisualPath()
+	end)
+end
+
+function startMonsterFarm()
+	task.spawn(function()
+		while autoMonster or autoBoss do
+			local target = getClosestMonster()
+			if target and rootPart and rootPart.Parent then
+				local clusterPos = getDenseMonsterClusterPosition()
+				if clusterPos then
+					moveToTarget(CFrame.new(clusterPos + Vector3.new(0, 3, 0)))
+				else
+					moveToTarget(target.cframe * CFrame.new(0, 3, 3))
+				end
+			end
+			task.wait(monsterInterval)
+		end
+		removeVisualPath()
+	end)
+end
+
+local function getClosestFishingSpotCoord()
+	if not rootPart then return fishingSpotCoords[1] end
+	local playerPos = rootPart.Position
+	local closestPos = fishingSpotCoords[1]
+	local minDst = math.huge
+
+	for _, pos in ipairs(fishingSpotCoords) do
+		local dst = (pos - playerPos).Magnitude
+		if dst < minDst then
+			minDst = dst
+			closestPos = pos
+		end
+	end
+	return closestPos
+end
+
+local function triggerClosestFishingPrompt()
+	local folder = Workspace:FindFirstChild("FishingSpots")
+	if not folder or not rootPart then return end
+
+	local playerPos = rootPart.Position
+	local closestChild = nil
+	local minDst = math.huge
+
+	for _, child in ipairs(folder:GetChildren()) do
+		local pos = nil
+		if child:IsA("Model") then
+			pos = child:GetPivot().Position
+		elseif child:IsA("BasePart") then
+			pos = child.Position
+		end
+
+		if pos then
+			local dst = (pos - playerPos).Magnitude
+			if dst < minDst then
+				minDst = dst
+				closestChild = child
+			end
+		end
+	end
+
+	if closestChild then
+		local prompt = closestChild:FindFirstChild("FishingPrompt", true) or closestChild:FindFirstChildOfClass("ProximityPrompt", true)
+		if prompt and prompt:IsA("ProximityPrompt") then
+			if fireproximityprompt then
+				fireproximityprompt(prompt)
+			elseif typeof(prompt.InputHoldBegin) == "function" then
+				prompt:InputHoldBegin()
+				task.wait(prompt.HoldDuration or 0.1)
+				prompt:InputHoldEnd()
+			end
+		end
+	end
+end
+
+function startFishingSpotClaim()
+	task.spawn(function()
+		while autoFishingSpot do
+			if rootPart and rootPart.Parent then
+				local targetPos = getClosestFishingSpotCoord()
+				moveToTarget(CFrame.new(targetPos))
+
+				if autoFishingSpot then
+					triggerClosestFishingPrompt()
+				end
+			end
+			task.wait(3.0)
+		end
+		removeVisualPath()
+	end)
+end
+
+-- 자동 낚시 엔진 (40% 겹침 시 E키 단타)
+local FISHING_TARGET_COLOR = Color3.fromRGB(255, 196, 87)
+local FISHING_COLOR_TOLERANCE = 3
+local FISHING_MIN_OVERLAP_RATIO = 0.4
+local isFishingTouching = false
+
+local function isFishingTargetColor(color)
+	if not color then return false end
+	local r = math.floor(color.R * 255 + 0.5)
+	local g = math.floor(color.G * 255 + 0.5)
+	local b = math.floor(color.B * 255 + 0.5)
+
+	return math.abs(r - FISHING_TARGET_COLOR.R * 255) <= FISHING_COLOR_TOLERANCE and
+	       math.abs(g - FISHING_TARGET_COLOR.G * 255) <= FISHING_COLOR_TOLERANCE and
+	       math.abs(b - FISHING_TARGET_COLOR.B * 255) <= FISHING_COLOR_TOLERANCE
+end
+
+local function getFishingOverlapRatio(gui1, gui2)
+	if not gui1.Visible or not gui2.Visible then return 0 end
+
+	local pos1, size1 = gui1.AbsolutePosition, gui1.AbsoluteSize
+	local pos2, size2 = gui2.AbsolutePosition, gui2.AbsoluteSize
+
+	local overlapX = math.max(0, math.min(pos1.X + size1.X, pos2.X + size2.X) - math.max(pos1.X, pos2.X))
+	local overlapY = math.max(0, math.min(pos1.Y + size1.Y, pos2.Y + size2.Y) - math.max(pos1.Y, pos2.Y))
+
+	if overlapX <= 0 or overlapY <= 0 then return 0 end
+
+	local overlapArea = overlapX * overlapY
+	local smallerArea = math.min(size1.X * size1.Y, size2.X * size2.Y)
+	if smallerArea <= 0 then return 0 end
+
+	return overlapArea / smallerArea
+end
+
+local function pressFishingEKey()
+	VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+	task.wait(0.02)
+	VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+end
+
+RunService.RenderStepped:Connect(function()
+	if not autoFishing then 
+		isFishingTouching = false
+		return 
+	end
+
+	local hudGui = playerGui:FindFirstChild("HudGui")
+	if not hudGui then 
+		isFishingTouching = false
+		return 
+	end
+
+	local fishingPanel = hudGui:FindFirstChild("FishingPanel")
+	if not fishingPanel or not fishingPanel.Visible then 
+		isFishingTouching = false
+		return 
+	end
+
+	local segments = fishingPanel:FindFirstChild("Segments")
+	local pointer = fishingPanel:FindFirstChild("Pointer")
+	if not segments or not pointer then 
+		isFishingTouching = false
+		return 
+	end
+
+	local isRatioMet = false
+
+	for _, segment in ipairs(segments:GetChildren()) do
+		if segment:IsA("GuiObject") and segment.Visible then
+			local segColor = segment:IsA("ImageLabel") and segment.ImageColor3 or segment.BackgroundColor3
+			
+			if isFishingTargetColor(segColor) then
+				local ratio = getFishingOverlapRatio(segment, pointer)
+				if ratio >= FISHING_MIN_OVERLAP_RATIO then
+					isRatioMet = true
+					break
+				end
+			end
+		end
+	end
+
+	if isRatioMet then
+		if not isFishingTouching then
+			isFishingTouching = true
+			pressFishingEKey()
+		end
+	else
+		isFishingTouching = false
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if loopSpeedEnabled and humanoid and humanoid.Parent then
+			pcall(function()
+				if humanoid.WalkSpeed ~= customWalkSpeed then
+					humanoid.WalkSpeed = customWalkSpeed
+				end
+			end)
+		end
+		task.wait(0.1)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if antiAfk and humanoid and humanoid.Parent then
+			pcall(function()
+				VirtualUser:CaptureController()
+				VirtualUser:ClickButton2(Vector2.new())
+			end)
+			if humanoid:GetState() ~= Enum.HumanoidStateType.Freefall then
+				humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+			end
+		end
+		task.wait(25)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if autoHeal and humanoid and humanoid.Parent then
+			if humanoid.Health > 0 and humanoid.Health < (humanoid.MaxHealth * 0.2) then
+				pcall(function()
+					VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.R, false, game)
+					task.wait(0.05)
+					VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.R, false, game)
+				end)
+			end
+		end
+		task.wait(0.25)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if autoDurability then
+			pcall(function()
+				local hudGui = playerGui:FindFirstChild("HudGui")
+				local statPanel = hudGui and hudGui:FindFirstChild("StatPanel")
+				local bottomRow = statPanel and statPanel:FindFirstChild("BottomRow")
+				local chip = bottomRow and bottomRow:FindFirstChild("DurabilityChip")
+
+				if chip and chip:IsA("TextLabel") then
+					local n = tonumber(chip.Text:match("(%d+)"))
+					if n and n <= 50 then
+						VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.V, false, game)
+						task.wait(0.05)
+						VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.V, false, game)
+					end
+				end
+			end)
+		end
+		task.wait(0.5)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if autoAttack then
+			pcall(function()
+				VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+				task.wait(0.05)
+				VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+			end)
+		end
+		task.wait(0.15)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if autoMagic then
+			local now = tick()
+			for i = 1, 4 do
+				if selectedSkills[i] and (now - lastSkillFire[i] >= skillCooldowns[i]) then
+					local keyCode = skillKeyCodes[i]
+					pcall(function()
+						VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+						task.wait(0.04)
+						VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+					end)
+					lastSkillFire[i] = now
+				end
+			end
+		end
+		task.wait(0.05)
+	end
+end)
+
+local function setupCharacter(newChar)
+	character = newChar
+	humanoid = newChar:WaitForChild("Humanoid")
+	rootPart = newChar:WaitForChild("HumanoidRootPart")
+
+	isJustRespawned = true
+	isFlying = false
+	currentTarget = nil
+
+	if not loopSpeedEnabled then customWalkSpeed = humanoid.WalkSpeed end
+
+	task.spawn(function()
+		local head = newChar:WaitForChild("Head", 5)
+		if head then
+			local nameplate = head:FindFirstChild("Nameplate")
+			if nameplate then
+				local userLabel = nameplate:FindFirstChild("UserLabel")
+				if userLabel then userLabel:Destroy() end
+				local nameLabel = nameplate:FindFirstChild("NameLabel")
+				if nameLabel then nameLabel:Destroy() end
+			end
+		end
+	end)
+
+	humanoid.Died:Connect(function()
+		removeVisualPath()
+		isFlying = false
+		currentTarget = nil
+	end)
+end
+
+player.CharacterAdded:Connect(setupCharacter)
+if character then setupCharacter(character) end
